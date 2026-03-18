@@ -84,6 +84,53 @@ function toErrorResult(prefix: string, error: unknown): ToolResult {
 	};
 }
 
+function normalizeOptionalDeviceId(deviceId?: string): string | undefined {
+	const normalized = deviceId?.trim();
+	return normalized ? normalized : undefined;
+}
+
+async function spotifyPlayerRequest(
+	context: ToolContext,
+	method: 'POST' | 'PUT',
+	path: string,
+	options?: {
+		deviceId?: string;
+		body?: unknown;
+	},
+): Promise<void> {
+	const url = new URL(`https://api.spotify.com/v1/${path}`);
+	const deviceId = normalizeOptionalDeviceId(options?.deviceId);
+	if (deviceId) {
+		url.searchParams.set('device_id', deviceId);
+	}
+
+	const headers: HeadersInit = {};
+	let body: string | undefined;
+	if (options?.body !== undefined) {
+		headers['content-type'] = 'application/json';
+		body = JSON.stringify(options.body);
+	}
+
+	const response = await spotifyFetch(context.env, context.grant, url.toString(), {
+		method,
+		headers,
+		body,
+	});
+
+	if (response.ok) {
+		return;
+	}
+
+	const rawBody = await response.text();
+	if (response.status === 404) {
+		throw new Error(
+			'No active Spotify device was found. Open Spotify on a device and start playback first, or provide a deviceId explicitly.',
+		);
+	}
+
+	throw new Error(`Spotify returned ${response.status}: ${rawBody || response.statusText}`);
+}
+
 function buildReadTools(context: ToolContext): SpotifyTool<any>[] {
 	const searchSpotify: SpotifyTool<{
 		query: string;
@@ -529,14 +576,17 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 
 			const spotifyUri = uri ?? `spotify:${type}:${id}`;
 			try {
-				await withSpotify(context, async (spotifyApi) => {
-					const device = deviceId ?? '';
-					if (type === 'track' || spotifyUri.startsWith('spotify:track:')) {
-						await spotifyApi.player.startResumePlayback(device, undefined, [spotifyUri]);
-						return;
-					}
-					await spotifyApi.player.startResumePlayback(device, spotifyUri);
-				});
+				if (type === 'track' || spotifyUri.startsWith('spotify:track:')) {
+					await spotifyPlayerRequest(context, 'PUT', 'me/player/play', {
+						deviceId,
+						body: { uris: [spotifyUri] },
+					});
+				} else {
+					await spotifyPlayerRequest(context, 'PUT', 'me/player/play', {
+						deviceId,
+						body: { context_uri: spotifyUri },
+					});
+				}
 
 				return { content: [{ type: 'text', text: `Started playback for ${spotifyUri}.` }] };
 			} catch (error) {
@@ -553,7 +603,7 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 		},
 		handler: async ({ deviceId }) => {
 			try {
-				await withSpotify(context, (spotifyApi) => spotifyApi.player.pausePlayback(deviceId ?? ''));
+				await spotifyPlayerRequest(context, 'PUT', 'me/player/pause', { deviceId });
 				return { content: [{ type: 'text', text: 'Playback paused.' }] };
 			} catch (error) {
 				return toErrorResult('Error pausing playback', error);
@@ -569,7 +619,7 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 		},
 		handler: async ({ deviceId }) => {
 			try {
-				await withSpotify(context, (spotifyApi) => spotifyApi.player.startResumePlayback(deviceId ?? ''));
+				await spotifyPlayerRequest(context, 'PUT', 'me/player/play', { deviceId, body: {} });
 				return { content: [{ type: 'text', text: 'Playback resumed.' }] };
 			} catch (error) {
 				return toErrorResult('Error resuming playback', error);
@@ -585,7 +635,7 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 		},
 		handler: async ({ deviceId }) => {
 			try {
-				await withSpotify(context, (spotifyApi) => spotifyApi.player.skipToNext(deviceId ?? ''));
+				await spotifyPlayerRequest(context, 'POST', 'me/player/next', { deviceId });
 				return { content: [{ type: 'text', text: 'Skipped to the next track.' }] };
 			} catch (error) {
 				return toErrorResult('Error skipping to the next track', error);
@@ -601,7 +651,7 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 		},
 		handler: async ({ deviceId }) => {
 			try {
-				await withSpotify(context, (spotifyApi) => spotifyApi.player.skipToPrevious(deviceId ?? ''));
+				await spotifyPlayerRequest(context, 'POST', 'me/player/previous', { deviceId });
 				return { content: [{ type: 'text', text: 'Skipped to the previous track.' }] };
 			} catch (error) {
 				return toErrorResult('Error skipping to the previous track', error);
@@ -700,9 +750,25 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 			}
 
 			try {
-				await withSpotify(context, (spotifyApi) =>
-					spotifyApi.player.addItemToPlaybackQueue(spotifyUri, deviceId ?? ''),
-				);
+				const url = new URL('https://api.spotify.com/v1/me/player/queue');
+				url.searchParams.set('uri', spotifyUri);
+				const normalizedDeviceId = normalizeOptionalDeviceId(deviceId);
+				if (normalizedDeviceId) {
+					url.searchParams.set('device_id', normalizedDeviceId);
+				}
+
+				const response = await spotifyFetch(context.env, context.grant, url.toString(), {
+					method: 'POST',
+				});
+				if (!response.ok) {
+					if (response.status === 404) {
+						throw new Error(
+							'No active Spotify device was found. Open Spotify on a device and start playback first, or provide a deviceId explicitly.',
+						);
+					}
+					throw new Error(`Spotify returned ${response.status}: ${await response.text()}`);
+				}
+
 				return { content: [{ type: 'text', text: `Added ${spotifyUri} to the queue.` }] };
 			} catch (error) {
 				return toErrorResult('Error adding to queue', error);
@@ -722,9 +788,24 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 		},
 		handler: async ({ volumePercent, deviceId }) => {
 			try {
-				await withSpotify(context, (spotifyApi) =>
-					spotifyApi.player.setPlaybackVolume(Math.round(volumePercent), deviceId ?? ''),
-				);
+				const url = new URL('https://api.spotify.com/v1/me/player/volume');
+				url.searchParams.set('volume_percent', String(Math.round(volumePercent)));
+				const normalizedDeviceId = normalizeOptionalDeviceId(deviceId);
+				if (normalizedDeviceId) {
+					url.searchParams.set('device_id', normalizedDeviceId);
+				}
+
+				const response = await spotifyFetch(context.env, context.grant, url.toString(), {
+					method: 'PUT',
+				});
+				if (!response.ok) {
+					if (response.status === 404) {
+						throw new Error(
+							'No active Spotify device was found. Open Spotify on a device and start playback first, or provide a deviceId explicitly.',
+						);
+					}
+					throw new Error(`Spotify returned ${response.status}: ${await response.text()}`);
+				}
 				return { content: [{ type: 'text', text: `Volume set to ${Math.round(volumePercent)}%.` }] };
 			} catch (error) {
 				return toErrorResult('Error setting volume', error);
@@ -750,9 +831,24 @@ function buildPlayTools(context: ToolContext): SpotifyTool<any>[] {
 				}
 
 				const newVolume = Math.min(100, Math.max(0, playback.device.volume_percent + adjustment));
-				await withSpotify(context, (spotifyApi) =>
-					spotifyApi.player.setPlaybackVolume(Math.round(newVolume), deviceId ?? ''),
-				);
+				const url = new URL('https://api.spotify.com/v1/me/player/volume');
+				url.searchParams.set('volume_percent', String(Math.round(newVolume)));
+				const normalizedDeviceId = normalizeOptionalDeviceId(deviceId);
+				if (normalizedDeviceId) {
+					url.searchParams.set('device_id', normalizedDeviceId);
+				}
+
+				const response = await spotifyFetch(context.env, context.grant, url.toString(), {
+					method: 'PUT',
+				});
+				if (!response.ok) {
+					if (response.status === 404) {
+						throw new Error(
+							'No active Spotify device was found. Open Spotify on a device and start playback first, or provide a deviceId explicitly.',
+						);
+					}
+					throw new Error(`Spotify returned ${response.status}: ${await response.text()}`);
+				}
 
 				return {
 					content: [
