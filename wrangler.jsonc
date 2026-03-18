@@ -7,14 +7,21 @@
 	"name": "spotifymcp",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-03-10",
+	"workers_dev": true,
 	"compatibility_flags": [
 		"nodejs_compat",
 		"global_fetch_strictly_public"
 	],
-	"assets": {
-		// The path to the directory containing the `index.html` file to be served at `/`
-		"directory": "./public"
-	},
+	"kv_namespaces": [
+		{
+			"binding": "OAUTH_KV",
+			"id": "586d0af9d1654de0bd0562a308b2f31e"
+		},
+		{
+			"binding": "SPOTIFY_TOKENS",
+			"id": "0a91d0203dc24ed6a884c9508fe0c6ce"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}

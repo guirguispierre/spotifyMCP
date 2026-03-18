@@ -1,5 +1,5 @@
 {
-	"name": "spotifymcp",
+	"name": "spotify-mcp-server",
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
@@ -15,5 +15,14 @@
 		"typescript": "^5.5.2",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.75.0"
+	},
+	"dependencies": {
+		"@cloudflare/workers-oauth-provider": "^0.3.0",
+		"@modelcontextprotocol/sdk": "^1.27.1",
+		"@spotify/web-api-ts-sdk": "^1.2.0",
+		"agents": "^0.7.6",
+		"cookie": "^1.1.1",
+		"hono": "^4.12.8",
+		"zod": "^4.3.6"
 	}
 }
