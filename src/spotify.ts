@@ -1,5 +1,3 @@
-import { SpotifyApi } from '@spotify/web-api-ts-sdk';
-
 export type SpotifyWorkerEnv = Env & {
 	APP_ENCRYPTION_SECRET: string;
 	SPOTIFY_CLIENT_ID: string;
@@ -19,6 +17,12 @@ export const SPOTIFY_API_SCOPES = [
 	'user-library-read',
 	'user-library-modify',
 	'user-read-recently-played',
+	'user-read-playback-position',
+	'user-top-read',
+	'user-follow-read',
+	'user-follow-modify',
+	'playlist-read-collaborative',
+	'ugc-image-upload',
 ];
 
 export type SpotifyGrantProps = {
@@ -231,13 +235,14 @@ export async function getSpotifyProfile(accessToken: string): Promise<{
 export async function getActiveSpotifyTokens(
 	env: SpotifyWorkerEnv,
 	grant: SpotifyGrantProps,
+	options: { forceRefresh?: boolean } = {},
 ): Promise<SpotifyTokenRecord> {
 	const record = await loadSpotifyTokens(env, grant.spotifyUserKey);
 	if (!record) {
 		throw new Error('No Spotify tokens are stored for this user. Reconnect this MCP integration in your client.');
 	}
 
-	if (record.expiresAt <= Date.now() + 60_000) {
+	if (options.forceRefresh || record.expiresAt <= Date.now() + 60_000) {
 		const refreshed = await refreshSpotifyAuthorization(env, record);
 		await saveSpotifyTokens(env, grant.spotifyUserKey, refreshed);
 		return refreshed;
@@ -246,39 +251,27 @@ export async function getActiveSpotifyTokens(
 	return record;
 }
 
-export async function createSpotifyApiForGrant(
-	env: SpotifyWorkerEnv,
-	grant: SpotifyGrantProps,
-): Promise<{ api: SpotifyApi; record: SpotifyTokenRecord }> {
-	const record = await getActiveSpotifyTokens(env, grant);
-	const expiresIn = Math.max(60, Math.floor((record.expiresAt - Date.now()) / 1000));
-
-	return {
-		api: SpotifyApi.withAccessToken(env.SPOTIFY_CLIENT_ID, {
-			access_token: record.accessToken,
-			token_type: record.tokenType,
-			expires_in: expiresIn,
-			refresh_token: record.refreshToken,
-		}),
-		record,
-	};
-}
-
 export async function spotifyFetch(
 	env: SpotifyWorkerEnv,
 	grant: SpotifyGrantProps,
 	input: string,
 	init?: RequestInit,
 ): Promise<Response> {
-	const { record } = await createSpotifyApiForGrant(env, grant);
+	const send = (record: SpotifyTokenRecord) =>
+		fetch(input, {
+			...init,
+			headers: {
+				...((init?.headers as Record<string, string> | undefined) ?? {}),
+				Authorization: `Bearer ${record.accessToken}`,
+			},
+		});
 
-	return fetch(input, {
-		...init,
-		headers: {
-			Authorization: `Bearer ${record.accessToken}`,
-			...(init?.headers ?? {}),
-		},
-	});
+	const response = await send(await getActiveSpotifyTokens(env, grant));
+	if (response.status !== 401) {
+		return response;
+	}
+
+	return send(await getActiveSpotifyTokens(env, grant, { forceRefresh: true }));
 }
 
 export function getSpotifyAuthorizeUrl(baseUrl: string, state: string, env: SpotifyWorkerEnv): string {

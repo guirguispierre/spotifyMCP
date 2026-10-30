@@ -39,6 +39,10 @@ type SignedStatePayload =
 	  };
 
 const SUPPORTED_MCP_SCOPES = ['spotify'];
+const SERVER_INSTRUCTIONS =
+	'Controls the connected user\'s Spotify account. Playback control needs Spotify Premium and an active device: if a player call reports no active device, call getAvailableDevices then transferPlayback (or pass deviceId). ' +
+	'IDs, spotify: URIs and open.spotify.com URLs are all accepted. Use playSearch / addToQueue({query}) for natural requests like "play X" or "queue Y". ' +
+	'Use spotifyApiRequest for any Web API endpoint without a dedicated tool.';
 const USER_COOKIE_NAME = '__Host-spotify-mcp-user';
 const textEncoder = new TextEncoder();
 
@@ -203,13 +207,24 @@ function createSpotifyTokenRecord(
 }
 
 function buildMcpServer(env: SpotifyWorkerEnv, grant: SpotifyGrantProps): McpServer {
-	const server = new McpServer({
-		name: 'spotify-mcp',
-		version: '1.0.0',
-	});
+	const server = new McpServer(
+		{
+			name: 'spotify-mcp',
+			version: '2.0.0',
+		},
+		{ instructions: SERVER_INSTRUCTIONS },
+	);
 
 	for (const tool of getSpotifyTools({ env, grant })) {
-		server.tool(tool.name, tool.description, tool.schema, tool.handler);
+		server.registerTool(
+			tool.name,
+			{
+				description: tool.description,
+				inputSchema: tool.schema,
+				annotations: { readOnlyHint: tool.readOnly ?? false, openWorldHint: true },
+			},
+			tool.handler,
+		);
 	}
 
 	return server;
